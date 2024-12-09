@@ -94,6 +94,12 @@ public class FTPServer {
                 return ensureAuthenticated(session) ? handleCwd(argument, session) : "530 Najpierw się zaloguj.";
             case "LIST":
                 return ensureAuthenticated(session) ? handleList(session) : "530 Najpierw się zaloguj.";
+            case "TYPE":
+                return ensureAuthenticated(session) ? handleType(argument, session) : "530 Najpierw się zaloguj.";
+            case "MKD":
+                return ensureAuthenticated(session) ? handleMkd(argument, session) : "530 Najpierw się zaloguj.";
+            case "RMD":
+                return ensureAuthenticated(session) ? handleRmd(argument, session) : "530 Najpierw się zaloguj.";
             default:
                 return "502 Komenda nie zaimplementowana.";
         }
@@ -160,8 +166,10 @@ public class FTPServer {
     private String handlePwd(ClientSession session) {
         File currentDirectory = session.getCurrentDirectory();
         String relativePath = currentDirectory.getAbsolutePath().substring(rootDirectory.length());
+        relativePath = normalizePath(relativePath);
         return "257 \"" + (relativePath.isEmpty() ? "/" : relativePath) + "\" is current directory";
     }
+
 
     private String handleCdup(ClientSession session) {
         File currentDirectory = session.getCurrentDirectory();
@@ -172,8 +180,10 @@ public class FTPServer {
         }
 
         session.setCurrentDirectory(parentDirectory);
-        return "200 Katalog zmieniony na nadrzędny.";
+        String relativePath = normalizePath(parentDirectory.getAbsolutePath().substring(rootDirectory.length()));
+        return "200 Katalog zmieniony na " + (relativePath.isEmpty() ? "/" : relativePath);
     }
+
 
     private String handleCwd(String argument, ClientSession session) throws IOException {
         if (argument.isEmpty()) {
@@ -191,14 +201,16 @@ public class FTPServer {
         }
 
         session.setCurrentDirectory(targetDirectory);
-        return "250 Katalog zmieniony na " + targetDirectory.getAbsolutePath().substring(rootDirectory.length());
+        String relativePath = normalizePath(targetDirectory.getAbsolutePath().substring(rootDirectory.length()));
+        return "250 Katalog zmieniony na " + relativePath;
     }
+
 
     private String handleList(ClientSession session) {
         if (!session.isPassiveMode() || session.getDataSocket() == null) {
             return "425 Tryb pasywny nie został włączony.";
         }
-            System.out.println("PORT DATASOCKET: "+session.getDataSocket());
+        System.out.println("PORT DATASOCKET: " + session.getDataSocket());
         try (Socket dataSocket = session.getDataSocket().accept();
              PrintWriter dataOut = new PrintWriter(dataSocket.getOutputStream(), true)) {
 
@@ -215,7 +227,6 @@ public class FTPServer {
                     dataOut.println(fileInfo);
                 }
             }
-
             // Zamykanie połączenia danych i informowanie o zakończeniu
             session.getDataSocket().close();
             session.setDataSocket(null); // Wyłączenie trybu PASV po zakończeniu transferu
@@ -226,12 +237,97 @@ public class FTPServer {
     }
 
     private String formatFileInfo(File file) {
-        // Formatowanie informacji o pliku/katalogu w stylu UNIX (przykład)
-        String type = file.isDirectory() ? "d" : "-";
-        String permissions = "rwxr-xr-x"; // Przykładowe uprawnienia
+        // Określenie uprawnień
+        String permissions = (file.isDirectory() ? "d" : "-")
+                + (file.canRead() ? "r" : "-")
+                + (file.canWrite() ? "w" : "-")
+                + (file.canExecute() ? "x" : "-")
+                + "r--r--";
+
+        // Liczba linków (przyjmijmy domyślnie 1)
+        int links = 1;
+
+        // Właściciel i grupa (domyślne wartości)
+        String owner = "user";
+        String group = "group";
+
+        // Rozmiar pliku
         long size = file.length();
-        String lastModified = new Date(file.lastModified()).toString(); // Można dostosować format daty
-        return String.format("%s%s 1 user group %10d %s %s", type, permissions, size, lastModified, file.getName());
+
+        // Data modyfikacji
+        Date lastModified = new Date(file.lastModified());
+        String formattedDate = new java.text.SimpleDateFormat("MMM dd HH:mm").format(lastModified);
+
+        // Nazwa pliku
+        String name = normalizePath(file.getName());
+
+        // Tworzymy sformatowany wynik
+        return String.format("%s %2d %s %s %10d %s %s",
+                permissions, links, owner, group, size, formattedDate, name);
+    }
+
+
+
+
+    private String handleType(String argument, ClientSession session) {
+        if (argument.isEmpty()) {
+            return "501 Brak argumentu.";
+        }
+        switch (argument.toUpperCase()) {
+            case "A": // ASCII
+                session.setTransferType(ClientSession.TransferType.ASCII);
+                return "200 Tryb transferu ustawiony na ASCII.";
+            case "I": // Binary (Image)
+                session.setTransferType(ClientSession.TransferType.BINARY);
+                return "200 Tryb transferu ustawiony na Binary.";
+            default:
+                return "504 Nieobsługiwany typ danych.";
+        }
+    }
+
+    private String handleMkd(String argument, ClientSession session) {
+        if (argument == null || argument.isEmpty()) {
+            return "501 Missing directory name.";
+        }
+
+        File newDir = new File(session.getCurrentDirectory(), argument);
+
+        if (newDir.exists()) {
+            return "550 Directory already exists.";
+        }
+
+        if (newDir.mkdir()) {
+            return "257 \"" + newDir.getName() + "\" created.";
+        } else {
+            return "550 Failed to create directory.";
+        }
+    }
+
+    // Obsługa polecenia RMD (Remove Directory)
+    private String handleRmd(String argument, ClientSession session) {
+        if (argument == null || argument.isEmpty()) {
+            return "501 Missing directory name.";
+        }
+
+        File targetDir = new File(session.getCurrentDirectory(), argument);
+
+        if (!targetDir.exists()) {
+            return "550 Directory does not exist.";
+        }
+
+        if (!targetDir.isDirectory()) {
+            return "550 Specified path is not a directory.";
+        }
+
+        if (targetDir.delete()) {
+            return "250 Directory deleted.";
+        } else {
+            return "550 Failed to delete directory. Make sure it is empty.";
+        }
+    }
+
+    private String normalizePath(String path) {
+        return path.replace("/", "\\");
     }
 
 
@@ -259,6 +355,7 @@ class ClientSession {
     private ServerSocket dataSocket;
     private Socket controlSocket;
     private File currentDirectory;
+    private TransferType transferType = TransferType.ASCII;
 
     public ClientSession(Socket controlSocket) {
         this.username = null;
@@ -267,6 +364,18 @@ class ClientSession {
         this.dataSocket = null;
         this.controlSocket = controlSocket;
         this.currentDirectory = null; // Ustawiane później po zalogowaniu
+    }
+
+    public enum TransferType {
+        ASCII, BINARY
+    }
+
+    public TransferType getTransferType() {
+        return transferType;
+    }
+
+    public void setTransferType(TransferType transferType) {
+        this.transferType = transferType;
     }
 
     public File getCurrentDirectory() {
