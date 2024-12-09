@@ -100,6 +100,13 @@ public class FTPServer {
                 return ensureAuthenticated(session) ? handleMkd(argument, session) : "530 Najpierw się zaloguj.";
             case "RMD":
                 return ensureAuthenticated(session) ? handleRmd(argument, session) : "530 Najpierw się zaloguj.";
+            case "STOR":
+                return ensureAuthenticated(session) ? handleStor(argument, session) : "530 Please log in first.";
+            case "RETR":
+                return ensureAuthenticated(session) ? handleRetr(argument, session) : "530 Please log in first.";
+            case "DELE":
+                return ensureAuthenticated(session) ? handleDele(argument, session) : "530 Please log in first.";
+
             default:
                 return "502 Komenda nie zaimplementowana.";
         }
@@ -167,7 +174,7 @@ public class FTPServer {
         File currentDirectory = session.getCurrentDirectory();
         String relativePath = currentDirectory.getAbsolutePath().substring(rootDirectory.length());
         relativePath = normalizePath(relativePath);
-        return "257 \"" + (relativePath.isEmpty() ? "/" : relativePath) + "\" is current directory";
+        return "257 \"" + (relativePath.isEmpty() ? "\\" : relativePath) + "\" is current directory";
     }
 
 
@@ -267,8 +274,6 @@ public class FTPServer {
     }
 
 
-
-
     private String handleType(String argument, ClientSession session) {
         if (argument.isEmpty()) {
             return "501 Brak argumentu.";
@@ -323,6 +328,97 @@ public class FTPServer {
             return "250 Directory deleted.";
         } else {
             return "550 Failed to delete directory. Make sure it is empty.";
+        }
+    }
+
+    private String handleStor(String argument, ClientSession session) {
+        if (argument == null || argument.isEmpty()) {
+            return "501 Missing file name.";
+        }
+
+        if (!session.isPassiveMode() || session.getDataSocket() == null) {
+            return "425 Passive mode not enabled.";
+        }
+
+        File targetFile = new File(session.getCurrentDirectory(), argument);
+
+        try (Socket dataSocket = session.getDataSocket().accept();
+             FileOutputStream fileOut = new FileOutputStream(targetFile);
+             InputStream dataIn = dataSocket.getInputStream()) {
+
+            PrintWriter controlOut = new PrintWriter(session.getControlSocket().getOutputStream(), true);
+            controlOut.println("150 Opening data connection for file transfer.");
+
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = dataIn.read(buffer)) != -1) {
+                fileOut.write(buffer, 0, bytesRead);
+            }
+
+            controlOut.println("226 Transfer complete.");
+            session.setDataSocket(null); // Wyłączenie trybu PASV po zakończeniu transferu
+            return "";
+        } catch (IOException e) {
+            return "425 Error during file transfer.";
+        }
+    }
+
+    private String handleRetr(String argument, ClientSession session) {
+        if (argument == null || argument.isEmpty()) {
+            return "501 Missing file name.";
+        }
+
+        if (!session.isPassiveMode() || session.getDataSocket() == null) {
+            return "425 Passive mode not enabled.";
+        }
+
+        File targetFile = new File(session.getCurrentDirectory(), argument);
+
+        if (!targetFile.exists() || !targetFile.isFile()) {
+            return "550 File does not exist.";
+        }
+
+        try (Socket dataSocket = session.getDataSocket().accept();
+             FileInputStream fileIn = new FileInputStream(targetFile);
+             OutputStream dataOut = dataSocket.getOutputStream()) {
+
+            PrintWriter controlOut = new PrintWriter(session.getControlSocket().getOutputStream(), true);
+            controlOut.println("150 Opening data connection for file transfer.");
+
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = fileIn.read(buffer)) != -1) {
+                dataOut.write(buffer, 0, bytesRead);
+            }
+            dataOut.flush();
+
+            controlOut.println("226 Transfer complete.");
+            session.setDataSocket(null); // Wyłączenie trybu PASV po zakończeniu transferu
+            return "";
+        } catch (IOException e) {
+            return "425 Error during file transfer.";
+        }
+    }
+
+    private String handleDele(String argument, ClientSession session) {
+        if (argument == null || argument.isEmpty()) {
+            return "501 Missing file name.";
+        }
+
+        File targetFile = new File(session.getCurrentDirectory(), argument);
+
+        if (!targetFile.exists()) {
+            return "550 File does not exist.";
+        }
+
+        if (!targetFile.isFile()) {
+            return "550 Specified path is not a file.";
+        }
+
+        if (targetFile.delete()) {
+            return "250 File deleted successfully.";
+        } else {
+            return "450 Unable to delete the file.";
         }
     }
 
