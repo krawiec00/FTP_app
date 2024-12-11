@@ -6,13 +6,13 @@ import java.util.concurrent.ThreadLocalRandom;
 public class FTPServer {
     private int port;
     private String rootDirectory;
-    private String username;
-    private String password;
     private boolean anonymousEnabled;
     private int passivePortMin;
     private int passivePortMax;
     private String listeningAddress;
     private ServerSocket dataSocket;
+    private Map<String, String> users = new HashMap<>();
+
 
     public FTPServer(String configFilePath) throws IOException {
         loadConfiguration(configFilePath);
@@ -125,7 +125,7 @@ public class FTPServer {
         if (username.equalsIgnoreCase("anonymous") && anonymousEnabled) {
             session.setUsername("anonymous");
             return "331 Anonimowy dostęp, proszę podać e-mail jako hasło.";
-        } else if (username.equals(this.username)) {
+        } else if (users.containsKey(username)) {
             session.setUsername(username);
             return "331 Proszę podać hasło.";
         } else {
@@ -133,12 +133,13 @@ public class FTPServer {
         }
     }
 
+
     private String handlePass(String password, ClientSession session) {
         if ("anonymous".equals(session.getUsername()) && anonymousEnabled) {
             session.setAuthenticated(true);
             session.setCurrentDirectory(new File(rootDirectory)); // Ustawienie katalogu startowego
             return "230 Zalogowano jako użytkownik anonimowy.";
-        } else if (this.password.equals(password) && this.username.equals(session.getUsername())) {
+        } else if (users.containsKey(session.getUsername()) && users.get(session.getUsername()).equals(password)) {
             session.setAuthenticated(true);
             session.setCurrentDirectory(new File(rootDirectory)); // Ustawienie katalogu startowego
             return "230 Zalogowano pomyślnie.";
@@ -146,7 +147,6 @@ public class FTPServer {
             return "530 Nieprawidłowe dane logowania.";
         }
     }
-
 
     private String handlePasv(ClientSession session) {
         try {
@@ -197,7 +197,13 @@ public class FTPServer {
             return "501 Brak argumentu.";
         }
 
-        File targetDirectory = new File(session.getCurrentDirectory(), argument).getCanonicalFile();
+        File targetDirectory;
+
+        if (argument.startsWith("\\")) {
+            targetDirectory = new File(rootDirectory, argument).getCanonicalFile();
+        } else {
+            targetDirectory = new File(session.getCurrentDirectory(), argument).getCanonicalFile();
+        }
 
         if (!targetDirectory.exists() || !targetDirectory.isDirectory()) {
             return "550 Katalog nie istnieje.";
@@ -209,7 +215,7 @@ public class FTPServer {
 
         session.setCurrentDirectory(targetDirectory);
         String relativePath = normalizePath(targetDirectory.getAbsolutePath().substring(rootDirectory.length()));
-        return "250 Katalog zmieniony na " + relativePath;
+        return "250 Katalog zmieniony na " + (relativePath.isEmpty() ? "/" : relativePath);
     }
 
 
@@ -261,14 +267,11 @@ public class FTPServer {
         // Rozmiar pliku
         long size = file.length();
 
-        // Data modyfikacji
         Date lastModified = new Date(file.lastModified());
         String formattedDate = new java.text.SimpleDateFormat("MMM dd HH:mm").format(lastModified);
 
-        // Nazwa pliku
         String name = normalizePath(file.getName());
 
-        // Tworzymy sformatowany wynik
         return String.format("%s %2d %s %s %10d %s %s",
                 permissions, links, owner, group, size, formattedDate, name);
     }
@@ -435,13 +438,20 @@ public class FTPServer {
 
         this.port = Integer.parseInt(config.getProperty("port", "21"));
         this.rootDirectory = config.getProperty("rootDirectory", ".");
-        this.username = config.getProperty("username", "admin");
-        this.password = config.getProperty("password", "admin");
         this.anonymousEnabled = Boolean.parseBoolean(config.getProperty("anonymousEnabled", "false"));
         this.passivePortMin = Integer.parseInt(config.getProperty("passivePortMin", "50000"));
         this.passivePortMax = Integer.parseInt(config.getProperty("passivePortMax", "51000"));
         this.listeningAddress = config.getProperty("listeningAddress", "0.0.0.0");
+
+        for (String key : config.stringPropertyNames()) {
+            if (key.startsWith("users.")) {
+                String username = key.substring(6);
+                String password = config.getProperty(key);
+                users.put(username, password);
+            }
+        }
     }
+
 }
 
 class ClientSession {
@@ -459,7 +469,7 @@ class ClientSession {
         this.passiveMode = false;
         this.dataSocket = null;
         this.controlSocket = controlSocket;
-        this.currentDirectory = null; // Ustawiane później po zalogowaniu
+        this.currentDirectory = null;
     }
 
     public enum TransferType {
