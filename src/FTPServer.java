@@ -53,7 +53,7 @@ public class FTPServer {
         try (BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
              PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)) {
 
-            out.println("220 Witaj na serwerze FTP!");
+            out.println("220 Welcome to the FTP server!");
 
             String command;
             while ((command = in.readLine()) != null) {
@@ -89,26 +89,29 @@ public class FTPServer {
             case "PWD":
                 return ensureAuthenticated(session) ? handlePwd(session) : "530 Najpierw się zaloguj.";
             case "CDUP":
-                return ensureAuthenticated(session) ? handleCdup(session) : "530 Najpierw się zaloguj.";
+                return ensureAuthenticated(session) ? handleCdup(session) : "530 Please log in first.";
             case "CWD":
-                return ensureAuthenticated(session) ? handleCwd(argument, session) : "530 Najpierw się zaloguj.";
+                return ensureAuthenticated(session) ? handleCwd(argument, session) : "530 Please log in first.";
             case "LIST":
-                return ensureAuthenticated(session) ? handleList(session) : "530 Najpierw się zaloguj.";
+                return ensureAuthenticated(session) ? handleList(session) : "530 Please log in first.";
             case "TYPE":
-                return ensureAuthenticated(session) ? handleType(argument, session) : "530 Najpierw się zaloguj.";
+                return ensureAuthenticated(session) ? handleType(argument, session) : "530 Please log in first.";
             case "MKD":
-                return ensureAuthenticated(session) ? handleMkd(argument, session) : "530 Najpierw się zaloguj.";
+                return ensureAuthenticated(session) ? handleMkd(argument, session) : "530 Please log in first.";
             case "RMD":
-                return ensureAuthenticated(session) ? handleRmd(argument, session) : "530 Najpierw się zaloguj.";
+                return ensureAuthenticated(session) ? handleRmd(argument, session) : "530 Please log in first.";
             case "STOR":
                 return ensureAuthenticated(session) ? handleStor(argument, session) : "530 Please log in first.";
             case "RETR":
                 return ensureAuthenticated(session) ? handleRetr(argument, session) : "530 Please log in first.";
             case "DELE":
                 return ensureAuthenticated(session) ? handleDele(argument, session) : "530 Please log in first.";
-
+            case "MODE":
+                return ensureAuthenticated(session) ? handleMode(argument) : "530 Please log in first.";
+            case "STRU":
+                return ensureAuthenticated(session) ? handleStru(argument) : "530 Please log in first.";
             default:
-                return "502 Komenda nie zaimplementowana.";
+                return "502 Command not implemented.";
         }
     }
 
@@ -124,12 +127,12 @@ public class FTPServer {
     private String handleUser(String username, ClientSession session) {
         if (username.equalsIgnoreCase("anonymous") && anonymousEnabled) {
             session.setUsername("anonymous");
-            return "331 Anonimowy dostęp, proszę podać e-mail jako hasło.";
+            return "331 Anonymous access granted, please send your email as the password.";
         } else if (users.containsKey(username)) {
             session.setUsername(username);
-            return "331 Proszę podać hasło.";
+            return "331 Password required.";
         } else {
-            return "530 Nieznany użytkownik.";
+            return "530 Unknown user.";
         }
     }
 
@@ -138,15 +141,28 @@ public class FTPServer {
         if ("anonymous".equals(session.getUsername()) && anonymousEnabled) {
             session.setAuthenticated(true);
             session.setCurrentDirectory(new File(rootDirectory)); // Ustawienie katalogu startowego
-            return "230 Zalogowano jako użytkownik anonimowy.";
+            return "230 Logged in as anonymous.";
         } else if (users.containsKey(session.getUsername()) && users.get(session.getUsername()).equals(password)) {
             session.setAuthenticated(true);
-            session.setCurrentDirectory(new File(rootDirectory)); // Ustawienie katalogu startowego
-            return "230 Zalogowano pomyślnie.";
+
+            File userDirectory = new File(rootDirectory, session.getUsername());
+            rootDirectory = userDirectory.toString();
+            if (!userDirectory.exists()) {
+                if (userDirectory.mkdir()) {
+                    System.out.println("Katalog użytkownika " + session.getUsername() + " został utworzony.");
+                } else {
+                    System.err.println("Nie udało się utworzyć katalogu dla użytkownika: " + session.getUsername());
+                    return "530 Internal server error while creating user directory.";
+                }
+            }
+
+            session.setCurrentDirectory(userDirectory); // Ustawienie katalogu użytkownika
+            return "230 User logged in successfully.";
         } else {
-            return "530 Nieprawidłowe dane logowania.";
+            return "530 Invalid login credentials.";
         }
     }
+
 
     private String handlePasv(ClientSession session) {
         try {
@@ -163,10 +179,10 @@ public class FTPServer {
 
             session.setPassiveMode(true);
             session.setDataSocket(dataSocket);
-
+            System.out.println("PORT DATASOCKET: " + session.getDataSocket());
             return String.format("227 Entering Passive Mode (%s,%d,%d).", ipAddress, p1, p2);
         } catch (IOException e) {
-            return "425 Nie można otworzyć trybu pasywnego.";
+            return "425 Can't open data connection.";
         }
     }
 
@@ -183,18 +199,18 @@ public class FTPServer {
         File parentDirectory = currentDirectory.getParentFile();
 
         if (parentDirectory == null || !parentDirectory.getAbsolutePath().startsWith(rootDirectory)) {
-            return "550 Nie można przejść wyżej.";
+            return "550 Requested action not taken.";
         }
 
         session.setCurrentDirectory(parentDirectory);
         String relativePath = normalizePath(parentDirectory.getAbsolutePath().substring(rootDirectory.length()));
-        return "200 Katalog zmieniony na " + (relativePath.isEmpty() ? "/" : relativePath);
+        return "200 Directory successfully changed to " + (relativePath.isEmpty() ? "/" : relativePath);
     }
 
 
     private String handleCwd(String argument, ClientSession session) throws IOException {
         if (argument.isEmpty()) {
-            return "501 Brak argumentu.";
+            return "501 Syntax error in parameters or arguments.";
         }
 
         File targetDirectory;
@@ -206,30 +222,29 @@ public class FTPServer {
         }
 
         if (!targetDirectory.exists() || !targetDirectory.isDirectory()) {
-            return "550 Katalog nie istnieje.";
+            return "550 Requested action not taken.";
         }
 
         if (!targetDirectory.getAbsolutePath().startsWith(rootDirectory)) {
-            return "550 Dostęp do katalogu zabroniony.";
+            return "550 Requested action not taken.";
         }
 
         session.setCurrentDirectory(targetDirectory);
         String relativePath = normalizePath(targetDirectory.getAbsolutePath().substring(rootDirectory.length()));
-        return "250 Katalog zmieniony na " + (relativePath.isEmpty() ? "/" : relativePath);
+        return "250 Catalog changed to " + (relativePath.isEmpty() ? "/" : relativePath);
     }
 
 
     private String handleList(ClientSession session) {
         if (!session.isPassiveMode() || session.getDataSocket() == null) {
-            return "425 Tryb pasywny nie został włączony.";
+            return "425 Can't open data connection";
         }
-        System.out.println("PORT DATASOCKET: " + session.getDataSocket());
         try (Socket dataSocket = session.getDataSocket().accept();
              PrintWriter dataOut = new PrintWriter(dataSocket.getOutputStream(), true)) {
 
             // Wysyłamy informację do klienta o rozpoczęciu transferu danych
             PrintWriter controlOut = new PrintWriter(session.getControlSocket().getOutputStream(), true);
-            controlOut.println("150 Opening data connection for file list.");
+            controlOut.println("150 File status okay; about to open data connection.");
 
             // Pobieramy listę plików i katalogów w bieżącym katalogu roboczym
             File currentDir = session.getCurrentDirectory();
@@ -243,9 +258,11 @@ public class FTPServer {
             // Zamykanie połączenia danych i informowanie o zakończeniu
             session.getDataSocket().close();
             session.setDataSocket(null); // Wyłączenie trybu PASV po zakończeniu transferu
-            return "226 Transfer complete.";
+            return "226 Closing data connection.\n" +
+                    "             Requested file action successful (for example, file\n" +
+                    "             transfer or file abort).";
         } catch (IOException e) {
-            return "425 Błąd podczas transferu danych.";
+            return "425 Can't open data connection.";
         }
     }
 
@@ -279,23 +296,23 @@ public class FTPServer {
 
     private String handleType(String argument, ClientSession session) {
         if (argument.isEmpty()) {
-            return "501 Brak argumentu.";
+            return "501 Syntax error in parameters or arguments.";
         }
         switch (argument.toUpperCase()) {
             case "A": // ASCII
                 session.setTransferType(ClientSession.TransferType.ASCII);
-                return "200 Tryb transferu ustawiony na ASCII.";
+                return "200 Transfer type changed to ASCII.";
             case "I": // Binary (Image)
                 session.setTransferType(ClientSession.TransferType.BINARY);
-                return "200 Tryb transferu ustawiony na Binary.";
+                return "200 Transfer type changed to Binary.";
             default:
-                return "504 Nieobsługiwany typ danych.";
+                return "504 Command not implemented for that parameter.";
         }
     }
 
     private String handleMkd(String argument, ClientSession session) {
         if (argument == null || argument.isEmpty()) {
-            return "501 Missing directory name.";
+            return "501 Syntax error in parameters or arguments.";
         }
 
         File newDir = new File(session.getCurrentDirectory(), argument);
@@ -314,7 +331,7 @@ public class FTPServer {
     // Obsługa polecenia RMD (Remove Directory)
     private String handleRmd(String argument, ClientSession session) {
         if (argument == null || argument.isEmpty()) {
-            return "501 Missing directory name.";
+            return "501 Syntax error in parameters or arguments.";
         }
 
         File targetDir = new File(session.getCurrentDirectory(), argument);
@@ -424,6 +441,29 @@ public class FTPServer {
             return "450 Unable to delete the file.";
         }
     }
+
+    private String handleMode(String argument) {
+        if (argument.isEmpty()) {
+            return "501 Brak argumentu.";
+        }
+        if ("S".equalsIgnoreCase(argument)) {
+            return "200 Tryb transferu ustawiony na Stream.";
+        } else {
+            return "504 Nieobsługiwany tryb transferu.";
+        }
+    }
+
+    private String handleStru(String argument) {
+        if (argument.isEmpty()) {
+            return "501 Syntax error in parameters or arguments.";
+        }
+        if ("F".equalsIgnoreCase(argument)) {
+            return "200 Command okay.";
+        } else {
+            return "504 Command not implemented for that parameter.";
+        }
+    }
+
 
     private String normalizePath(String path) {
         return path.replace("/", "\\");
