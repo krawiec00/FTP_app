@@ -138,30 +138,32 @@ public class FTPServer {
 
 
     private String handlePass(String password, ClientSession session) {
+
+        session.setUserRootDirectory(new File(rootDirectory));
+        String userRootDirectory = String.valueOf(session.getUserRootDirectory());
         if ("anonymous".equals(session.getUsername()) && anonymousEnabled) {
             session.setAuthenticated(true);
-            session.setCurrentDirectory(new File(rootDirectory)); // Ustawienie katalogu startowego
+            session.setUserRootDirectory(new File(userRootDirectory)); // Anonymous ma katalog główny serwera
+            session.setCurrentDirectory(session.getUserRootDirectory()); // Ustaw katalog początkowy
             return "230 Logged in as anonymous.";
         } else if (users.containsKey(session.getUsername()) && users.get(session.getUsername()).equals(password)) {
             session.setAuthenticated(true);
 
-            File userDirectory = new File(rootDirectory, session.getUsername());
-            rootDirectory = userDirectory.toString();
-            if (!userDirectory.exists()) {
-                if (userDirectory.mkdir()) {
-                    System.out.println("Katalog użytkownika " + session.getUsername() + " został utworzony.");
-                } else {
-                    System.err.println("Nie udało się utworzyć katalogu dla użytkownika: " + session.getUsername());
-                    return "530 Internal server error while creating user directory.";
-                }
+            // Utwórz katalog użytkownika w `rootDirectory`
+            File userDirectory = new File(userRootDirectory, session.getUsername());
+            if (!userDirectory.exists() && !userDirectory.mkdir()) {
+                System.err.println("Nie udało się utworzyć katalogu dla użytkownika: " + session.getUsername());
+                return "530 Internal server error while creating user directory.";
             }
 
-            session.setCurrentDirectory(userDirectory); // Ustawienie katalogu użytkownika
+            session.setUserRootDirectory(userDirectory); // Przypisz katalog użytkownika
+            session.setCurrentDirectory(userDirectory); // Ustaw jako katalog bieżący
             return "230 User logged in successfully.";
         } else {
             return "530 Invalid login credentials.";
         }
     }
+
 
 
     private String handlePasv(ClientSession session) {
@@ -187,8 +189,9 @@ public class FTPServer {
     }
 
     private String handlePwd(ClientSession session) {
+        String userRootDirectory = String.valueOf(session.getUserRootDirectory());
         File currentDirectory = session.getCurrentDirectory();
-        String relativePath = currentDirectory.getAbsolutePath().substring(rootDirectory.length());
+        String relativePath = currentDirectory.getAbsolutePath().substring(userRootDirectory.length());
         relativePath = normalizePath(relativePath);
         return "257 \"" + (relativePath.isEmpty() ? "\\" : relativePath) + "\" is current directory";
     }
@@ -198,25 +201,25 @@ public class FTPServer {
         File currentDirectory = session.getCurrentDirectory();
         File parentDirectory = currentDirectory.getParentFile();
 
-        if (parentDirectory == null || !parentDirectory.getAbsolutePath().startsWith(rootDirectory)) {
+        if (parentDirectory == null || !parentDirectory.getAbsolutePath().startsWith(session.getUserRootDirectory().getAbsolutePath())) {
             return "550 Requested action not taken.";
         }
 
         session.setCurrentDirectory(parentDirectory);
-        String relativePath = normalizePath(parentDirectory.getAbsolutePath().substring(rootDirectory.length()));
-        return "200 Directory successfully changed to " + (relativePath.isEmpty() ? "/" : relativePath);
+        return "200 Directory successfully changed.";
     }
+
 
 
     private String handleCwd(String argument, ClientSession session) throws IOException {
         if (argument.isEmpty()) {
             return "501 Syntax error in parameters or arguments.";
         }
-
+        String userRootDirectory = String.valueOf(session.getUserRootDirectory());
         File targetDirectory;
 
         if (argument.startsWith("\\")) {
-            targetDirectory = new File(rootDirectory, argument).getCanonicalFile();
+            targetDirectory = new File(userRootDirectory, argument).getCanonicalFile();
         } else {
             targetDirectory = new File(session.getCurrentDirectory(), argument).getCanonicalFile();
         }
@@ -225,12 +228,12 @@ public class FTPServer {
             return "550 Requested action not taken.";
         }
 
-        if (!targetDirectory.getAbsolutePath().startsWith(rootDirectory)) {
+        if (!targetDirectory.getAbsolutePath().startsWith(userRootDirectory)) {
             return "550 Requested action not taken.";
         }
 
         session.setCurrentDirectory(targetDirectory);
-        String relativePath = normalizePath(targetDirectory.getAbsolutePath().substring(rootDirectory.length()));
+        String relativePath = normalizePath(targetDirectory.getAbsolutePath().substring(userRootDirectory.length()));
         return "250 Catalog changed to " + (relativePath.isEmpty() ? "/" : relativePath);
     }
 
@@ -251,7 +254,7 @@ public class FTPServer {
             File[] files = currentDir.listFiles();
             if (files != null) {
                 for (File file : files) {
-                    String fileInfo = formatFileInfo(file);
+                    String fileInfo = formatFileInfo(file, session);
                     dataOut.println(fileInfo);
                 }
             }
@@ -266,7 +269,7 @@ public class FTPServer {
         }
     }
 
-    private String formatFileInfo(File file) {
+    private String formatFileInfo(File file, ClientSession session) {
         // Określenie uprawnień
         String permissions = (file.isDirectory() ? "d" : "-")
                 + (file.canRead() ? "r" : "-")
@@ -278,8 +281,8 @@ public class FTPServer {
         int links = 1;
 
         // Właściciel i grupa (domyślne wartości)
-        String owner = "user";
-        String group = "group";
+        String owner = session.getUsername();
+        String group = " ";
 
         // Rozmiar pliku
         long size = file.length();
@@ -501,6 +504,7 @@ class ClientSession {
     private ServerSocket dataSocket;
     private Socket controlSocket;
     private File currentDirectory;
+    private File userRootDirectory;
     private TransferType transferType = TransferType.ASCII;
 
     public ClientSession(Socket controlSocket) {
@@ -510,6 +514,14 @@ class ClientSession {
         this.dataSocket = null;
         this.controlSocket = controlSocket;
         this.currentDirectory = null;
+    }
+
+    public File getUserRootDirectory() {
+        return userRootDirectory;
+    }
+
+    public void setUserRootDirectory(File userRootDirectory) {
+        this.userRootDirectory = userRootDirectory;
     }
 
     public enum TransferType {
