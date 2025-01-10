@@ -49,6 +49,26 @@ public class FTPServer {
 
     private void handleClient(Socket clientSocket) {
         ClientSession session = new ClientSession(clientSocket);
+        session.updateLastActivityTime(); // Ustawienie początkowego czasu aktywności
+
+        // Limit czasu w sekundach
+        final int TIMEOUT_SECONDS = 300;
+
+        Thread timeoutThread = new Thread(() -> {
+            try {
+                while (true) {
+                    Thread.sleep(5000);
+                    if (System.currentTimeMillis() - session.getLastActivityTime() > TIMEOUT_SECONDS * 1000) {
+                        System.out.println("Client disconnected due to inactivity: " + session.getUsername());
+                        clientSocket.close();
+                        break;
+                    }
+                }
+            } catch (InterruptedException | IOException e) {
+                System.err.println("Error in timeout thread: " + e.getMessage());
+            }
+        });
+        timeoutThread.start();
 
         try (BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
              PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)) {
@@ -58,6 +78,9 @@ public class FTPServer {
             String command;
             while ((command = in.readLine()) != null) {
                 System.out.println("Komenda od klienta: " + command);
+
+                // Aktualizacja czasu aktywności po każdej komendzie
+                session.updateLastActivityTime();
 
                 String response = processCommand(command, session);
                 out.println(response);
@@ -69,8 +92,15 @@ public class FTPServer {
 
         } catch (IOException e) {
             System.err.println("Błąd podczas obsługi klienta: " + e.getMessage());
+        } finally {
+            try {
+                clientSocket.close();
+            } catch (IOException e) {
+                System.err.println("Błąd podczas zamykania połączenia: " + e.getMessage());
+            }
         }
     }
+
 
     private String processCommand(String command, ClientSession session) throws IOException {
         String[] parts = command.split(" ", 2);
@@ -117,7 +147,7 @@ public class FTPServer {
 
     private boolean ensureAuthenticated(ClientSession session) {
         if (!session.isAuthenticated()) {
-            System.err.println("Nieautoryzowana próba użycia komendy przez użytkownika: " + session.getUsername());
+            System.err.println("Unauthorized use of commend by user: " + session.getUsername());
             return false;
         }
         return true;
@@ -506,6 +536,7 @@ class ClientSession {
     private File currentDirectory;
     private File userRootDirectory;
     private TransferType transferType = TransferType.ASCII;
+    private long lastActivityTime;
 
     public ClientSession(Socket controlSocket) {
         this.username = null;
@@ -514,6 +545,14 @@ class ClientSession {
         this.dataSocket = null;
         this.controlSocket = controlSocket;
         this.currentDirectory = null;
+    }
+
+    public void updateLastActivityTime() {
+        this.lastActivityTime = System.currentTimeMillis();
+    }
+
+    public long getLastActivityTime() {
+        return lastActivityTime;
     }
 
     public File getUserRootDirectory() {
